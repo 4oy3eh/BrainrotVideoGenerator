@@ -1,0 +1,38 @@
+# Content Factory - TikTok Mass Production System
+# Python Dependencies
+
+# Core FastAPI and web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Async processing
+asyncio==3.4.3
+aiofiles==23.2.1
+
+# Text-to-Speech
+edge-tts==6.1.9
+
+# System monitoring and performance
+psutil==5.9.6
+
+# Data validation and parsing
+pydantic==2.5.0
+
+# HTTP client for API calls
+httpx==0.25.2
+
+# JSON and configuration handling
+python-json-logger==2.0.7
+
+# File handling and utilities
+pathlib2==2.3.7
+typing-extensions==4.8.0
+
+# Development and testing (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Additional utilities
+python-dateutil==2.8.2
+GPUtil>=1.4.0

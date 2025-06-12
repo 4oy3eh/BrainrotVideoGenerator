@@ -1,0 +1,148 @@
+{
+  "languages": {
+    "en": {
+      "name": "English (US)",
+      "voice": "en-US-JennyNeural",
+      "locale": "en-US",
+      "rate": "+20%",
+      "pitch": "+5Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "en-US-AriaNeural",
+        "en-US-GuyNeural",
+        "en-US-JasonNeural"
+      ],
+      "test_text": "This is a test of the English TTS voice for brainrot content generation."
+    },
+    "es": {
+      "name": "Spanish (Mexico)",
+      "voice": "es-MX-DaliaNeural",
+      "locale": "es-MX",
+      "rate": "+15%",
+      "pitch": "+3Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "es-MX-JorgeNeural",
+        "es-MX-CandelaNeural",
+        "es-ES-ElviraNeural"
+      ],
+      "test_text": "Esta es una prueba de la voz TTS en español para generación de contenido viral."
+    },
+    "pt": {
+      "name": "Portuguese (Brazil)",
+      "voice": "pt-BR-FranciscaNeural",
+      "locale": "pt-BR",
+      "rate": "+18%",
+      "pitch": "+4Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "pt-BR-AntonioNeural",
+        "pt-BR-BrendaNeural",
+        "pt-BR-DonatoNeural"
+      ],
+      "test_text": "Este é um teste da voz TTS em português para geração de conteúdo viral brasileiro."
+    },
+    "fr": {
+      "name": "French (France)",
+      "voice": "fr-FR-DeniseNeural",
+      "locale": "fr-FR",
+      "rate": "+22%",
+      "pitch": "+2Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "fr-FR-HenriNeural",
+        "fr-FR-JosephineNeural",
+        "fr-FR-MauriceNeural"
+      ],
+      "test_text": "Ceci est un test de la voix TTS française pour la génération de contenu viral."
+    },
+    "de": {
+      "name": "German (Germany)",
+      "voice": "de-DE-KatjaNeural",
+      "locale": "de-DE",
+      "rate": "+25%",
+      "pitch": "+1Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "de-DE-ConradNeural",
+        "de-DE-AmalaNeural",
+        "de-DE-BerndNeural"
+      ],
+      "test_text": "Dies ist ein Test der deutschen TTS-Stimme für die Generierung von viralem Content."
+    },
+    "ru": {
+      "name": "Russian (Russia)",
+      "voice": "ru-RU-SvetlanaNeural",
+      "locale": "ru-RU",
+      "rate": "+10%",
+      "pitch": "+0Hz",
+      "volume": "+0%",
+      "alternative_voices": [
+        "ru-RU-DmitryNeural",
+        "ru-RU-PolarisNeural",
+        "ru-RU-TatyanaNeural"
+      ],
+      "test_text": "Это тест русского голоса TTS для генерации вирусного контента в ТикТок."
+    }
+  },
+  "voice_settings": {
+    "global": {
+      "output_format": "audio-16khz-32kbitrate-mono-mp3",
+      "timeout": 30,
+      "max_retries": 3,
+      "silence_duration": 0.2
+    },
+    "brainrot_optimizations": {
+      "emphasis_words": ["crazy", "insane", "unbelievable", "shocking", "viral", "trending"],
+      "pause_after_words": ["but", "however", "wait", "listen", "check this out"],
+      "speed_boost_percentage": 15,
+      "engagement_pitch_variance": true
+    }
+  },
+  "quality_settings": {
+    "production": {
+      "bitrate": "32k",
+      "sample_rate": "16khz",
+      "format": "mp3"
+    },
+    "high_quality": {
+      "bitrate": "128k",
+      "sample_rate": "48khz",
+      "format": "wav"
+    },
+    "preview": {
+      "bitrate": "16k",
+      "sample_rate": "8khz",
+      "format": "mp3"
+    }
+  },
+  "content_categories": {
+    "story": {
+      "rate_modifier": "+5%",
+      "pitch_modifier": "+2Hz",
+      "emphasis_level": "medium"
+    },
+    "facts": {
+      "rate_modifier": "+25%",
+      "pitch_modifier": "+8Hz",
+      "emphasis_level": "high"
+    },
+    "comedy": {
+      "rate_modifier": "+30%",
+      "pitch_modifier": "+10Hz",
+      "emphasis_level": "very_high"
+    },
+    "educational": {
+      "rate_modifier": "+10%",
+      "pitch_modifier": "+3Hz",
+      "emphasis_level": "low"
+    }
+  },
+  "metadata": {
+    "version": "1.0",
+    "last_updated": "2025-01-20",
+    "compatible_edge_tts_version": "6.1.9",
+    "total_languages": 6,
+    "production_target": "36_videos_per_day"
+  }
+}
