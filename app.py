@@ -1,42 +1,114 @@
-"""
-Content Factory - Main FastAPI Application
-TikTok mass production system with full integration
-"""
-
-import os
 import asyncio
-import json
-from pathlib import Path
-from typing import Dict, List, Optional, Any
-from datetime import datetime
-
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
+import sys
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pathlib import Path
+import json
+import logging
+from typing import List, Dict, Optional
+import uvicorn
+from contextlib import asynccontextmanager
+import signal
+import os
 
 # Import our modules
-from modules.utils import (
-    setup_logging, FileValidator, temp_manager, health_checker,
-    handle_errors, get_video_info
-)
-from modules.tts_processor import TTSProcessor
-from modules.nvenc_processor import NVENCProcessor
+from modules.tts_processor import TTSProcessor, setup_windows_asyncio
 from modules.queue_manager import QueueManager
+from modules.nvenc_processor import NVENCProcessor
 from modules.performance_monitor import PerformanceMonitor
-from config.hardware_config import HardwareConfig
 
 # Setup logging
-logger = setup_logging()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/app.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Global app state
+app_state = {
+    "tts_processor": None,
+    "video_processor": None,
+    "queue_manager": None,
+    "performance_monitor": None,
+    "shutdown_event": None
+}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager with proper startup/shutdown"""
+    # Setup Windows asyncio
+    setup_windows_asyncio()
+    
+    # Create directories
+    directories = [
+        "content/texts", "content/videos", "content/output",
+        "temp", "logs", "frontend/static"
+    ]
+    for directory in directories:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+    
+    # Load language configuration
+    with open("config/languages.json", "r", encoding="utf-8") as f:
+        languages = json.load(f)
+    
+    # Initialize components
+    logger.info("Starting Content Factory...")
+    
+    try:
+        # Initialize processors
+        app_state["tts_processor"] = TTSProcessor(languages)
+        app_state["video_processor"] = NVENCProcessor()
+        app_state["queue_manager"] = QueueManager()
+        app_state["performance_monitor"] = PerformanceMonitor()
+        app_state["shutdown_event"] = asyncio.Event()
+        
+        # Start background services
+        asyncio.create_task(background_processor())
+        asyncio.create_task(performance_monitor_task())
+        
+        logger.info("✓ Content Factory started successfully")
+        
+        yield
+        
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+        raise
+    finally:
+        # Cleanup
+        logger.info("Shutting down Content Factory...")
+        
+        if app_state["shutdown_event"]:
+            app_state["shutdown_event"].set()
+        
+        # Cleanup processors
+        if app_state["tts_processor"]:
+            try:
+                await app_state["tts_processor"].cleanup()
+            except Exception as e:
+                logger.error(f"TTS cleanup error: {e}")
+        
+        if app_state["video_processor"]:
+            try:
+                await app_state["video_processor"].cleanup()
+            except Exception as e:
+                logger.error(f"Video cleanup error: {e}")
+        
+        # Wait a bit for cleanup
+        await asyncio.sleep(0.5)
+        logger.info("✓ Shutdown complete")
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Content Factory",
-    description="TikTok Mass Production System - 36 videos per day across 6 languages",
+    description="Mass TikTok Content Production System",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -49,535 +121,244 @@ app.add_middleware(
 )
 
 # Mount static files
-frontend_path = Path("frontend")
-if frontend_path.exists():
-    app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
-
-# Initialize system components
-hw_config = HardwareConfig()
-tts_processor = TTSProcessor()
-nvenc_processor = NVENCProcessor(hw_config)
-queue_manager = QueueManager(max_concurrent=hw_config.MAX_CONCURRENT_JOBS)
-performance_monitor = PerformanceMonitor()
-
-# Load language configuration
-with open("config/languages.json", "r") as f:
-    LANGUAGES = json.load(f)
-
-# Pydantic models
-class ProductionJob(BaseModel):
-    text: str
-    languages: List[str]
-    video_files: List[str]
-    priority: int = 1
-    output_format: str = "mp4"
-
-class JobStatus(BaseModel):
-    job_id: str
-    status: str
-    progress: float
-    created_at: datetime
-    estimated_completion: Optional[datetime] = None
-    results: Dict[str, Any] = {}
-    error: Optional[str] = None
-
-class SystemStats(BaseModel):
-    total_jobs: int
-    completed_jobs: int
-    failed_jobs: int
-    queue_size: int
-    active_jobs: int
-    system_health: Dict[str, Any]
-    performance_metrics: Dict[str, Any]
-
-# Global job storage (in production, use Redis or database)
-active_jobs: Dict[str, JobStatus] = {}
-job_counter = 0
-
-@app.on_startup
-async def startup_event():
-    """Initialize system on startup"""
-    logger.info("🚀 Content Factory starting up...")
-    
-    try:
-        # Initialize processors
-        await tts_processor.initialize()
-        logger.info("✅ TTS Processor initialized")
-        
-        await nvenc_processor.initialize()
-        logger.info("✅ NVENC Processor initialized")
-        
-        # Start queue manager
-        await queue_manager.start()
-        logger.info("✅ Queue Manager started")
-        
-        # Start performance monitoring
-        performance_monitor.start()
-        logger.info("✅ Performance Monitor started")
-        
-        logger.info("🎬 Content Factory ready for mass production!")
-        
-    except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
-        raise
-
-@app.on_shutdown
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("🛑 Content Factory shutting down...")
-    
-    try:
-        # Stop all processors
-        await queue_manager.stop()
-        performance_monitor.stop()
-        
-        # Cleanup temporary files
-        temp_manager.cleanup_all()
-        
-        logger.info("👋 Content Factory shutdown complete")
-        
-    except Exception as e:
-        logger.error(f"❌ Shutdown error: {e}")
-
-# Routes
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve main frontend page"""
+async def get_frontend():
+    """Serve the main interface"""
     try:
-        frontend_file = Path("frontend/index.html")
-        if frontend_file.exists():
-            return HTMLResponse(content=frontend_file.read_text())
-        else:
-            return HTMLResponse(content="""
-            <html>
-                <head><title>Content Factory</title></head>
-                <body>
-                    <h1>🎬 Content Factory</h1>
-                    <p>TikTok Mass Production System</p>
-                    <p>Frontend not found. Please check frontend/index.html</p>
-                    <p><a href="/docs">API Documentation</a></p>
-                </body>
-            </html>
-            """)
-    except Exception as e:
-        logger.error(f"Error serving root page: {e}")
-        return HTMLResponse(content="<h1>Error loading page</h1>", status_code=500)
+        with open("frontend/index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="""
+        <html><body>
+        <h1>Content Factory</h1>
+        <p>Frontend not found. Please create frontend/index.html</p>
+        </body></html>
+        """)
 
-@app.get("/health")
-async def health_check():
-    """System health check endpoint"""
-    try:
-        health_report = await health_checker.comprehensive_health_check()
-        return JSONResponse(content=health_report)
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            content={"overall_health": False, "error": str(e)},
-            status_code=500
-        )
-
-@app.get("/api/status")
-async def get_system_status():
-    """Get comprehensive system status"""
-    try:
-        # Get queue statistics
-        queue_stats = queue_manager.get_statistics()
-        
-        # Get performance metrics
-        perf_metrics = performance_monitor.get_current_metrics()
-        
-        # Count job statuses
-        total_jobs = len(active_jobs)
-        completed_jobs = sum(1 for job in active_jobs.values() if job.status == "completed")
-        failed_jobs = sum(1 for job in active_jobs.values() if job.status == "failed")
-        active_job_count = sum(1 for job in active_jobs.values() if job.status in ["processing", "queued"])
-        
-        # Get system health
-        health_report = await health_checker.comprehensive_health_check()
-        
-        stats = SystemStats(
-            total_jobs=total_jobs,
-            completed_jobs=completed_jobs,
-            failed_jobs=failed_jobs,
-            queue_size=queue_stats.get("queue_size", 0),
-            active_jobs=active_job_count,
-            system_health=health_report,
-            performance_metrics=perf_metrics
-        )
-        
-        return stats
-        
-    except Exception as e:
-        logger.error(f"Failed to get system status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/languages")
-async def get_available_languages():
-    """Get available languages and voices"""
-    return {"languages": LANGUAGES}
-
-@app.post("/api/upload-videos")
-async def upload_videos(files: List[UploadFile] = File(...)):
-    """Upload video files for processing"""
-    uploaded_files = []
-    errors = []
-    
-    try:
-        videos_dir = Path("content/videos")
-        videos_dir.mkdir(exist_ok=True)
-        
-        for file in files:
-            try:
-                # Validate file
-                if not file.filename:
-                    errors.append("File has no name")
-                    continue
-                
-                # Save file
-                file_path = videos_dir / file.filename
-                
-                with open(file_path, "wb") as f:
-                    content = await file.read()
-                    f.write(content)
-                
-                # Validate video file
-                validation = FileValidator.validate_video_file(str(file_path))
-                
-                if validation['valid']:
-                    uploaded_files.append({
-                        "filename": file.filename,
-                        "path": str(file_path),
-                        "size": len(content),
-                        "info": validation.get('info', {}),
-                        "warnings": validation.get('warnings', [])
-                    })
-                    logger.info(f"✅ Uploaded video: {file.filename}")
-                else:
-                    # Remove invalid file
-                    file_path.unlink(missing_ok=True)
-                    errors.append(f"{file.filename}: {validation['error']}")
-                    logger.warning(f"❌ Invalid video {file.filename}: {validation['error']}")
-                
-            except Exception as e:
-                errors.append(f"{file.filename}: {str(e)}")
-                logger.error(f"Failed to upload {file.filename}: {e}")
-        
-        return {
-            "uploaded_files": uploaded_files,
-            "errors": errors,
-            "success_count": len(uploaded_files),
-            "error_count": len(errors)
-        }
-        
-    except Exception as e:
-        logger.error(f"Upload videos failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/start-production")
-async def start_production(
+@app.post("/api/create-content")
+async def create_content(
     background_tasks: BackgroundTasks,
     text: str = Form(...),
-    languages: str = Form(...),  # JSON string
-    video_files: str = Form(...),  # JSON string
-    priority: int = Form(default=1)
+    videos: List[UploadFile] = File(...),
+    title: str = Form("video")
 ):
-    """Start mass production job"""
-    global job_counter
-    
+    """Create content for all languages"""
     try:
-        # Parse JSON parameters
-        selected_languages = json.loads(languages)
-        selected_videos = json.loads(video_files)
-        
-        # Validate languages
-        invalid_languages = [lang for lang in selected_languages if lang not in LANGUAGES]
-        if invalid_languages:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid languages: {invalid_languages}"
+        if not app_state["queue_manager"]:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Service not ready"}
             )
         
-        # Validate video files
-        videos_dir = Path("content/videos")
-        for video_file in selected_videos:
-            video_path = videos_dir / video_file
-            if not video_path.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Video file not found: {video_file}"
-                )
+        # Save uploaded videos
+        video_paths = []
+        for i, video in enumerate(videos):
+            video_path = f"content/videos/{title}_{i}.mp4"
+            Path(video_path).parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(video_path, "wb") as f:
+                content = await video.read()
+                f.write(content)
+            video_paths.append(video_path)
         
-        # Validate text
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        # Add to queue
+        job_id = await app_state["queue_manager"].add_job({
+            "text": text,
+            "video_paths": video_paths,
+            "title": title,
+            "languages": ["en", "es", "pt", "fr", "de", "ru"]
+        })
         
-        if len(text) > 5000:
-            raise HTTPException(status_code=400, detail="Text too long (max 5000 characters)")
-        
-        # Create job
-        job_counter += 1
-        job_id = f"job_{job_counter}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        job_status = JobStatus(
-            job_id=job_id,
-            status="queued",
-            progress=0.0,
-            created_at=datetime.now()
-        )
-        
-        active_jobs[job_id] = job_status
-        
-        # Add to background processing
-        background_tasks.add_task(
-            process_production_job,
-            job_id, text, selected_languages, selected_videos, priority
-        )
-        
-        logger.info(f"🎬 Started production job {job_id}")
-        logger.info(f"   Languages: {selected_languages}")
-        logger.info(f"   Videos: {len(selected_videos)}")
-        logger.info(f"   Text length: {len(text)} chars")
-        
-        return {
+        return JSONResponse(content={
             "job_id": job_id,
             "status": "queued",
-            "message": f"Production job started for {len(selected_languages)} languages"
-        }
+            "message": f"Job queued successfully. ID: {job_id}"
+        })
         
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON parameter: {e}")
     except Exception as e:
-        logger.error(f"Failed to start production: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Content creation error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
-@app.get("/api/job/{job_id}")
+@app.get("/api/status/{job_id}")
 async def get_job_status(job_id: str):
-    """Get job status and progress"""
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    return active_jobs[job_id]
-
-@app.get("/api/jobs")
-async def list_jobs(limit: int = 50, status: Optional[str] = None):
-    """List all jobs with optional filtering"""
-    jobs = list(active_jobs.values())
-    
-    # Filter by status if specified
-    if status:
-        jobs = [job for job in jobs if job.status == status]
-    
-    # Sort by creation date (newest first)
-    jobs.sort(key=lambda x: x.created_at, reverse=True)
-    
-    # Limit results
-    jobs = jobs[:limit]
-    
-    return {
-        "jobs": jobs,
-        "total": len(jobs),
-        "filtered": status is not None
-    }
-
-@app.delete("/api/job/{job_id}")
-async def cancel_job(job_id: str):
-    """Cancel a job"""
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = active_jobs[job_id]
-    
-    if job.status in ["completed", "failed"]:
-        raise HTTPException(status_code=400, detail="Cannot cancel completed or failed job")
-    
-    # Try to cancel in queue manager
-    cancelled = await queue_manager.cancel_job(job_id)
-    
-    if cancelled:
-        job.status = "cancelled"
-        logger.info(f"Job {job_id} cancelled")
-        return {"message": "Job cancelled successfully"}
-    else:
-        raise HTTPException(status_code=400, detail="Job could not be cancelled")
-
-@app.get("/api/download/{job_id}/{language}")
-async def download_result(job_id: str, language: str):
-    """Download production result"""
-    if job_id not in active_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = active_jobs[job_id]
-    
-    if job.status != "completed":
-        raise HTTPException(status_code=400, detail="Job not completed")
-    
-    # Find the output file
-    output_dir = Path(f"content/output/{language}")
-    
-    # Look for files with job_id in name
-    output_files = list(output_dir.glob(f"*{job_id}*"))
-    
-    if not output_files:
-        raise HTTPException(status_code=404, detail="Output file not found")
-    
-    output_file = output_files[0]  # Take the first match
-    
-    return FileResponse(
-        path=output_file,
-        filename=f"{job_id}_{language}.mp4",
-        media_type="video/mp4"
-    )
-
-@app.post("/api/cleanup")
-async def cleanup_system():
-    """Manual system cleanup"""
+    """Get job status"""
     try:
-        # Cleanup temp files
-        cleanup_stats = temp_manager.cleanup_all()
+        if not app_state["queue_manager"]:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Service not ready"}
+            )
         
-        # Remove old completed jobs (older than 24 hours)
-        cutoff_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        old_jobs = [
-            job_id for job_id, job in active_jobs.items()
-            if job.created_at < cutoff_time and job.status in ["completed", "failed", "cancelled"]
-        ]
-        
-        for job_id in old_jobs:
-            del active_jobs[job_id]
-        
-        logger.info(f"Cleanup completed: {cleanup_stats}, removed {len(old_jobs)} old jobs")
-        
-        return {
-            "message": "Cleanup completed",
-            "temp_files_removed": cleanup_stats['files_removed'],
-            "temp_dirs_removed": cleanup_stats['dirs_removed'],
-            "old_jobs_removed": len(old_jobs)
-        }
+        status = await app_state["queue_manager"].get_job_status(job_id)
+        return JSONResponse(content=status)
         
     except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Status check error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
 
-# Background processing function
-@handle_errors()
-async def process_production_job(
-    job_id: str, 
-    text: str, 
-    languages: List[str], 
-    video_files: List[str], 
-    priority: int
-):
-    """Process production job in background"""
-    job = active_jobs[job_id]
-    
+@app.get("/api/queue")
+async def get_queue_status():
+    """Get queue status"""
     try:
-        job.status = "processing"
-        logger.info(f"🎬 Processing job {job_id}")
+        if not app_state["queue_manager"]:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Service not ready"}
+            )
         
-        total_tasks = len(languages) * len(video_files)
-        completed_tasks = 0
+        queue_status = await app_state["queue_manager"].get_queue_status()
+        return JSONResponse(content=queue_status)
         
-        results = {}
+    except Exception as e:
+        logger.error(f"Queue status error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+@app.get("/api/performance")
+async def get_performance():
+    """Get performance metrics"""
+    try:
+        if not app_state["performance_monitor"]:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Service not ready"}
+            )
         
-        for language in languages:
-            results[language] = []
+        metrics = await app_state["performance_monitor"].get_metrics()
+        return JSONResponse(content=metrics)
+        
+    except Exception as e:
+        logger.error(f"Performance metrics error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+async def background_processor():
+    """Background task processor"""
+    logger.info("Starting background processor...")
+    
+    while not app_state["shutdown_event"].is_set():
+        try:
+            if not app_state["queue_manager"]:
+                await asyncio.sleep(1)
+                continue
             
-            for video_file in video_files:
-                try:
-                    # Update progress
-                    job.progress = (completed_tasks / total_tasks) * 100
-                    
-                    # Generate TTS audio
-                    logger.info(f"Generating TTS for {language}...")
-                    voice = LANGUAGES[language]["voice"]
-                    audio_file = await tts_processor.generate_audio(text, voice, language)
-                    
-                    # Process video with NVENC
-                    logger.info(f"Processing video {video_file} for {language}...")
-                    video_path = Path("content/videos") / video_file
-                    
-                    output_filename = f"{job_id}_{language}_{Path(video_file).stem}.mp4"
-                    output_path = Path(f"content/output/{language}") / output_filename
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Add to processing queue
-                    task_id = await queue_manager.add_task(
-                        nvenc_processor.process_video,
-                        {
-                            "video_path": str(video_path),
-                            "audio_path": audio_file,
-                            "output_path": str(output_path),
-                            "text": text
-                        },
-                        priority=priority
+            # Get next job
+            job = await app_state["queue_manager"].get_next_job()
+            if not job:
+                await asyncio.sleep(1)
+                continue
+            
+            logger.info(f"Processing job {job['id']}")
+            
+            # Update job status
+            await app_state["queue_manager"].update_job_status(
+                job["id"], "processing", "Generating TTS..."
+            )
+            
+            # Generate TTS for all languages
+            tts_results = {}
+            if app_state["tts_processor"]:
+                async with app_state["tts_processor"] as tts:
+                    tts_results = await tts.generate_all_languages(
+                        job["data"]["text"],
+                        job["data"]["title"]
                     )
-                    
-                    # Wait for task completion
-                    result = await queue_manager.wait_for_task(task_id)
-                    
-                    if result["success"]:
-                        results[language].append({
-                            "video_file": video_file,
-                            "output_file": output_filename,
-                            "output_path": str(output_path),
-                            "duration": result.get("duration", 0),
-                            "file_size": result.get("file_size", 0)
-                        })
-                        logger.info(f"✅ Completed {language}/{video_file}")
-                    else:
-                        logger.error(f"❌ Failed {language}/{video_file}: {result.get('error')}")
-                        results[language].append({
-                            "video_file": video_file,
-                            "error": result.get("error", "Unknown error")
-                        })
-                    
-                    completed_tasks += 1
-                    
-                    # Cleanup temp audio file
-                    if Path(audio_file).exists():
-                        Path(audio_file).unlink()
-                    
-                except Exception as e:
-                    logger.error(f"Task failed {language}/{video_file}: {e}")
-                    results[language].append({
-                        "video_file": video_file,
-                        "error": str(e)
-                    })
-                    completed_tasks += 1
+            
+            if not tts_results:
+                await app_state["queue_manager"].update_job_status(
+                    job["id"], "failed", "TTS generation failed"
+                )
+                continue
+            
+            # Update status
+            await app_state["queue_manager"].update_job_status(
+                job["id"], "processing", "Compositing videos..."
+            )
+            
+            # Generate videos for each language
+            video_results = {}
+            if app_state["video_processor"]:
+                for lang, tts_path in tts_results.items():
+                    try:
+                        output_path = f"content/output/{lang}/{job['data']['title']}.mp4"
+                        success = await app_state["video_processor"].create_video(
+                            job["data"]["video_paths"],
+                            tts_path,
+                            output_path
+                        )
+                        if success:
+                            video_results[lang] = output_path
+                    except Exception as e:
+                        logger.error(f"Video creation failed for {lang}: {e}")
+            
+            # Update final status
+            if video_results:
+                await app_state["queue_manager"].update_job_status(
+                    job["id"], "completed", f"Generated {len(video_results)} videos",
+                    {"videos": video_results}
+                )
+                logger.info(f"✓ Job {job['id']} completed: {len(video_results)} videos")
+            else:
+                await app_state["queue_manager"].update_job_status(
+                    job["id"], "failed", "Video generation failed"
+                )
+                logger.error(f"✗ Job {job['id']} failed")
+            
+        except Exception as e:
+            logger.error(f"Background processor error: {e}")
+            await asyncio.sleep(5)  # Wait before retrying
+
+async def performance_monitor_task():
+    """Performance monitoring task"""
+    while not app_state["shutdown_event"].is_set():
+        try:
+            if app_state["performance_monitor"]:
+                await app_state["performance_monitor"].update_metrics()
+        except Exception as e:
+            logger.error(f"Performance monitor error: {e}")
         
-        # Job completed
-        job.status = "completed"
-        job.progress = 100.0
-        job.results = results
-        
-        # Calculate success statistics
-        total_videos = sum(len(results[lang]) for lang in results)
-        successful_videos = sum(
-            len([r for r in results[lang] if "error" not in r]) 
-            for lang in results
-        )
-        
-        logger.info(f"🎉 Job {job_id} completed: {successful_videos}/{total_videos} videos successful")
-        
-        # Record performance metrics
-        performance_monitor.record_job_completion(
-            job_id, total_videos, successful_videos, 
-            (datetime.now() - job.created_at).total_seconds()
-        )
-        
-    except Exception as e:
-        job.status = "failed"
-        job.error = str(e)
-        logger.error(f"💥 Job {job_id} failed: {e}")
+        await asyncio.sleep(30)  # Update every 30 seconds
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    if app_state["shutdown_event"]:
+        app_state["shutdown_event"].set()
+
+# Setup signal handlers
+if sys.platform != 'win32':
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_level="info"
-    )
+    try:
+        # Setup Windows asyncio before running
+        setup_windows_asyncio()
+        
+        # Run the server
+        uvicorn.run(
+            "app:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=False,  # Disable reload to prevent asyncio issues
+            log_level="info",
+            access_log=True
+        )
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user")
+    except Exception as e:
+        logger.error(f"Application error: {e}")
+    finally:
+        logger.info("Application terminated")

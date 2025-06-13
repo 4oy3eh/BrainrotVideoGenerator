@@ -423,7 +423,16 @@ def check_system_resources() -> Dict[str, Any]:
 def check_gpu_availability() -> bool:
     """Check if NVIDIA GPU is available for NVENC"""
     try:
+        # Attempt to call nvidia-smi
         result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    try:
+        # If that doesn't work, try calling the full path. (Author has this path)
+        result = subprocess.run([r'C:\Windows\System32\nvidia-smi.exe'], capture_output=True, text=True, timeout=10)
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
@@ -436,15 +445,22 @@ def check_dependencies() -> Dict[str, bool]:
         'edge-tts': False,
         'nvidia-smi': False
     }
-    
-    # Check command-line tools
-    for tool in ['ffmpeg', 'ffprobe', 'nvidia-smi']:
+
+    commands = {
+        'ffmpeg': ['ffmpeg', '-version'],
+        'ffprobe': ['ffprobe', '-version'],
+        'edge-tts': ['edge-tts', '--help'],  # у edge-tts нет -version, --help подойдет
+        'nvidia-smi': ['nvidia-smi']         # без параметров
+    }
+
+    for tool, cmd in commands.items():
         try:
-            result = subprocess.run([tool, '-version'], 
-                                  capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             dependencies[tool] = result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             dependencies[tool] = False
+
+    return dependencies
     
     # Check Python packages
     try:

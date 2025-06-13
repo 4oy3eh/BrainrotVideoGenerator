@@ -134,9 +134,9 @@ class ContentFactoryLauncher:
         try:
             hw_config = HardwareConfig()
             print(f"✅ Hardware configuration loaded")
-            print(f"   NVENC Encoder: {hw_config.VIDEO_SETTINGS['codec']}")
-            print(f"   Output Resolution: {hw_config.OUTPUT_FORMAT['width']}x{hw_config.OUTPUT_FORMAT['height']}")
-            print(f"   Max Concurrent Jobs: {hw_config.PERFORMANCE_LIMITS['max_concurrent_videos']}")
+            print(f"   NVENC Encoder: {hw_config.VIDEO_SETTINGS.get('codec')}")
+            print(f"   Output Resolution: {hw_config.OUTPUT_FORMAT.get('width')}x{hw_config.OUTPUT_FORMAT.get('height')}")
+            print(f"   Max Concurrent Jobs: {hw_config.PERFORMANCE_LIMITS['max_concurrent_jobs']}")
         except Exception as e:
             print(f"❌ Hardware configuration error: {e}")
             return False
